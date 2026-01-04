@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    extract::{Extension, Query},
+    extract::{Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -14,25 +14,48 @@ use std::{
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
-pub struct AppConfig {
+pub struct AppState {
     pub api_key: Option<String>,
     pub cache_ttl: Duration,
+    cache: Option<IpCache>,
 }
 
-impl AppConfig {
+impl AppState {
     pub fn from_env() -> Self {
         let api_key = std::env::var("IP2LOCATIONIO_KEY").ok();
-        AppConfig {
+        AppState {
             api_key,
             cache_ttl: Duration::from_secs(0),
+            cache: None,
         }
     }
 
     pub fn from_env_with_cache(ttl: Duration) -> Self {
         let api_key = std::env::var("IP2LOCATIONIO_KEY").ok();
-        AppConfig {
+        let cache = if ttl > Duration::from_secs(0) {
+            Some(build_cache())
+        } else {
+            None
+        };
+
+        AppState {
             api_key,
             cache_ttl: ttl,
+            cache,
+        }
+    }
+
+    pub fn new(api_key: Option<String>, cache_ttl: Duration) -> Self {
+        let cache = if cache_ttl > Duration::from_secs(0) {
+            Some(build_cache())
+        } else {
+            None
+        };
+
+        AppState {
+            api_key,
+            cache_ttl,
+            cache,
         }
     }
 }
@@ -49,29 +72,23 @@ fn build_cache() -> IpCache {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-pub fn app_with_config(config: AppConfig) -> Router {
-    let cache = if config.cache_ttl > Duration::from_secs(0) {
-        Some(build_cache())
-    } else {
-        None
-    };
+pub fn app_with_state(state: AppState) -> Router {
+    let shared_state = Arc::new(state);
 
     Router::new()
         .route("/geo", get(geo))
-        .layer(Extension(Arc::new(config)))
-        .layer(Extension(cache))
+        .with_state(shared_state)
 }
 
 pub fn app() -> Router {
-    app_with_config(AppConfig::from_env())
+    app_with_state(AppState::from_env())
 }
 
 async fn geo(
+    State(state): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
-    Extension(config): Extension<Arc<AppConfig>>,
-    Extension(cache): Extension<Option<IpCache>>,
 ) -> Response {
-    let api_key = match &config.api_key {
+    let api_key = match &state.api_key {
         Some(k) => k.clone(),
         None => {
             return (
@@ -87,11 +104,10 @@ async fn geo(
         None => return (StatusCode::BAD_REQUEST, "invalid ip").into_response(),
     };
 
-    if let Some(cache) = &cache {
+    if let Some(cache) = &state.cache {
         let mut cache_guard = cache.lock().await;
         if let Some(entry) = cache_guard.get(&ip) {
             if entry.expires_at > Instant::now() {
-                // Return cached body
                 let mut res = (StatusCode::OK, entry.body.clone()).into_response();
                 res.headers_mut().insert(
                     header::CONTENT_TYPE,
@@ -122,15 +138,17 @@ async fn geo(
         Err(_) => return (StatusCode::BAD_GATEWAY, "provider read failed").into_response(),
     };
 
-    if let Some(cache) = &cache {
-        let mut cache_guard = cache.lock().await;
-        cache_guard.insert(
-            ip,
-            CacheEntry {
-                body: body.clone(),
-                expires_at: Instant::now() + config.cache_ttl,
-            },
-        );
+    if let Some(cache) = &state.cache {
+        if state.cache_ttl > Duration::from_secs(0) {
+            let mut cache_guard = cache.lock().await;
+            cache_guard.insert(
+                ip,
+                CacheEntry {
+                    body: body.clone(),
+                    expires_at: Instant::now() + state.cache_ttl,
+                },
+            );
+        }
     }
 
     let mut res = (StatusCode::OK, body).into_response();
