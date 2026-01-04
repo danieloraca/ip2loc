@@ -9,6 +9,7 @@ A tiny Rust backend service that geolocates an IP address using the
 - Proper `Content-Type: application/json`
 - Optional in‑memory caching for repeated IP lookups
 - Rejects private/loopback/non‑routable IPs up front
+- Simple per-IP rate limiting to protect the upstream provider
 
 ---
 
@@ -133,6 +134,20 @@ content-type: application/json
 - **Upstream provider errors** (network issues, non‑2xx status, body read failures)
   return `502 Bad Gateway` with a short text message indicating what went wrong.
 
+- **Rate limiting exceeded** (too many requests for the same IP within a short window)
+  returns `429 Too Many Requests` with the message:
+
+  ```http
+  HTTP/1.1 429 Too Many Requests
+
+  rate limit exceeded for this IP
+  ```
+
+- When caching and annotation are enabled (the default in `AppState::from_env_with_cache`),
+  cached responses are marked with a `"cached": true` flag injected at the top level of the
+  JSON object on cache hits. The first response for an IP is the raw provider JSON; subsequent
+  responses (within the cache TTL) include `"cached": true`.
+
 ---
 
 ## Implementation notes
@@ -142,12 +157,15 @@ The core server is implemented using:
 - **Axum 0.7** with `State<AppState>` for dependency injection
 - A shared `reqwest::Client` stored in `AppState` and reused across requests
 - An optional in‑memory cache keyed by `IpAddr` with a per‑entry TTL
+- A simple in‑memory, per-IP rate limiter to avoid hammering the upstream provider
 
 The main types live in `src/lib.rs`:
 
 - `AppState` – holds:
   - `api_key: Option<Arc<str>>`
   - `cache_ttl: Duration`
+  - `annotate_cached_responses: bool` (for marking cached responses with `"cached": true`)
+  - a per-IP `RateLimitConfig` (max requests per window, window duration)
   - an internal cache map
   - a shared `reqwest::Client`
 - `app_with_state(state: AppState) -> Router` – builds the Axum router with state
@@ -168,8 +186,8 @@ cargo test
 
 The tests:
 
-- Construct the application with a custom `AppState`, injecting the API key directly
-  and controlling the cache TTL for deterministic behavior.
+- Construct the application with a custom `AppState`, injecting the API key directly,
+  controlling the cache TTL, and toggling cached-response annotation for deterministic behavior.
 - Verify:
   - Invalid IPs return `400 invalid ip`
   - Missing API key returns `500 missing IP2LOCATIONIO_KEY`
@@ -177,4 +195,6 @@ The tests:
   - Private/loopback IPs (e.g. `127.0.0.1`, `192.168.1.1`) are rejected with
     `400 non-routable ip not allowed`
   - With caching enabled, repeated requests for the same IP return consistent
-    HTTP status codes.
+    HTTP status codes
+  - When cached-response annotation is enabled, the second response for the same IP
+    (served from cache) includes `"cached": true` in the JSON body.

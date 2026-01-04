@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use lazy_static::lazy_static;
 use std::{
     collections::HashMap,
     net::IpAddr,
@@ -13,11 +14,20 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+#[derive(Clone, Copy)]
+pub struct RateLimitConfig {
+    /// Maximum number of requests allowed in the window for a single client IP.
+    pub max_requests: u32,
+    /// Window size for counting requests.
+    pub window: Duration,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub api_key: Option<Arc<str>>,
     pub cache_ttl: Duration,
     pub annotate_cached_responses: bool,
+    pub rate_limit: RateLimitConfig,
     cache: Option<IpCache>,
     client: reqwest::Client,
 }
@@ -31,6 +41,10 @@ impl AppState {
             api_key,
             cache_ttl: Duration::from_secs(0),
             annotate_cached_responses: false,
+            rate_limit: RateLimitConfig {
+                max_requests: 10,
+                window: Duration::from_secs(10),
+            },
             cache: None,
             client: reqwest::Client::new(),
         }
@@ -50,6 +64,10 @@ impl AppState {
             api_key,
             cache_ttl: ttl,
             annotate_cached_responses: true,
+            rate_limit: RateLimitConfig {
+                max_requests: 10,
+                window: Duration::from_secs(10),
+            },
             cache,
             client: reqwest::Client::new(),
         }
@@ -66,6 +84,10 @@ impl AppState {
             api_key,
             cache_ttl,
             annotate_cached_responses: false,
+            rate_limit: RateLimitConfig {
+                max_requests: 10,
+                window: Duration::from_secs(10),
+            },
             cache,
             client: reqwest::Client::new(),
         }
@@ -82,6 +104,10 @@ impl AppState {
             api_key,
             cache_ttl,
             annotate_cached_responses: true,
+            rate_limit: RateLimitConfig {
+                max_requests: 10,
+                window: Duration::from_secs(10),
+            },
             cache,
             client: reqwest::Client::new(),
         }
@@ -94,7 +120,18 @@ struct CacheEntry {
     expires_at: Instant,
 }
 
+#[derive(Clone)]
+struct RateEntry {
+    window_start: Instant,
+    count: u32,
+}
+
 type IpCache = Arc<Mutex<HashMap<IpAddr, CacheEntry>>>;
+type IpRateLimit = Arc<Mutex<HashMap<IpAddr, RateEntry>>>;
+
+lazy_static! {
+    static ref RATE_LIMIT_STORE: IpRateLimit = Arc::new(Mutex::new(HashMap::new()));
+}
 
 fn build_cache() -> IpCache {
     Arc::new(Mutex::new(HashMap::new()))
@@ -146,6 +183,34 @@ async fn geo(
 
     if is_non_routable {
         return (StatusCode::BAD_REQUEST, "non-routable ip not allowed").into_response();
+    }
+
+    {
+        let now = Instant::now();
+        let cfg = state.rate_limit;
+
+        let mut guard: tokio::sync::MutexGuard<'_, HashMap<IpAddr, RateEntry>> =
+            RATE_LIMIT_STORE.lock().await;
+        let entry = guard.entry(ip).or_insert(RateEntry {
+            window_start: now,
+            count: 0,
+        });
+
+        // If the current window has expired, reset it.
+        if now.duration_since(entry.window_start) > cfg.window {
+            entry.window_start = now;
+            entry.count = 0;
+        }
+
+        // Increment the count and enforce limit.
+        entry.count += 1;
+        if entry.count > cfg.max_requests {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate limit exceeded for this IP",
+            )
+                .into_response();
+        }
     }
 
     if let Some(cache) = &state.cache {
