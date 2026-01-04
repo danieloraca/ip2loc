@@ -1,11 +1,16 @@
 use axum::{
     Router,
-    extract::Query,
+    extract::{Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
+
+#[derive(Clone)]
+struct AppState {
+    base_url: Arc<String>,
+}
 
 #[tokio::main]
 async fn main() {
@@ -15,15 +20,22 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let app = Router::new().route("/geo", get(geo));
+    let state = AppState {
+        base_url: Arc::new("https://api.ip2location.io".to_string()),
+    };
+
+    let app = app(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     axum::serve(listener, app).await?;
-
     Ok(())
 }
 
-async fn geo(Query(q): Query<HashMap<String, String>>) -> Response {
+fn app(state: AppState) -> Router {
+    Router::new().route("/geo", get(geo)).with_state(state)
+}
+
+async fn geo(State(state): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
     let api_key = match std::env::var("IP2LOCATIONIO_KEY") {
         Ok(k) => k,
         Err(_) => {
@@ -40,7 +52,7 @@ async fn geo(Query(q): Query<HashMap<String, String>>) -> Response {
         None => return (StatusCode::BAD_REQUEST, "invalid ip").into_response(),
     };
 
-    let url = format!("https://api.ip2location.io/?key={api_key}&ip={ip}");
+    let url = format!("{}/?key={api_key}&ip={ip}", state.base_url);
 
     let resp = match reqwest::Client::new().get(url).send().await {
         Ok(r) => r,

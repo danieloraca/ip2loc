@@ -23,6 +23,7 @@ Clone the repo and set your API key as an environment variable:
 
 ```bash
 export IP2LOCATIONIO_KEY=your_api_key_here
+```
 
 ---
 
@@ -30,6 +31,7 @@ export IP2LOCATIONIO_KEY=your_api_key_here
 
 ```bash
 cargo run --release
+```
 
 The server will start on: `http://localhost:3000`
 
