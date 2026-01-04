@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 pub struct AppState {
     pub api_key: Option<Arc<str>>,
     pub cache_ttl: Duration,
+    pub annotate_cached_responses: bool,
     cache: Option<IpCache>,
     client: reqwest::Client,
 }
@@ -29,6 +30,7 @@ impl AppState {
         AppState {
             api_key,
             cache_ttl: Duration::from_secs(0),
+            annotate_cached_responses: false,
             cache: None,
             client: reqwest::Client::new(),
         }
@@ -47,6 +49,7 @@ impl AppState {
         AppState {
             api_key,
             cache_ttl: ttl,
+            annotate_cached_responses: true,
             cache,
             client: reqwest::Client::new(),
         }
@@ -62,6 +65,23 @@ impl AppState {
         AppState {
             api_key,
             cache_ttl,
+            annotate_cached_responses: false,
+            cache,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    pub fn new_with_cached_flag(api_key: Option<Arc<str>>, cache_ttl: Duration) -> Self {
+        let cache = if cache_ttl > Duration::from_secs(0) {
+            Some(build_cache())
+        } else {
+            None
+        };
+
+        AppState {
+            api_key,
+            cache_ttl,
+            annotate_cached_responses: true,
             cache,
             client: reqwest::Client::new(),
         }
@@ -164,11 +184,21 @@ async fn geo(
 
     if let Some(cache) = &state.cache {
         if state.cache_ttl > Duration::from_secs(0) {
+            let cached_body =
+                if state.annotate_cached_responses && body.trim_start().starts_with('{') {
+                    format!(
+                        r#"{{"cached":true,{}}}"#,
+                        body.trim_start().trim_start_matches('{')
+                    )
+                } else {
+                    body.clone()
+                };
+
             let mut cache_guard = cache.lock().await;
             cache_guard.insert(
                 ip,
                 CacheEntry {
-                    body: body.clone(),
+                    body: cached_body,
                     expires_at: Instant::now() + state.cache_ttl,
                 },
             );

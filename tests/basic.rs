@@ -1,4 +1,4 @@
-use axum::{body::Body, http::Request, http::StatusCode};
+use axum::{body, body::Body, http::Request, http::StatusCode};
 use tower::ServiceExt;
 
 use iploc::{AppState, app_with_state};
@@ -145,4 +145,59 @@ async fn repeated_requests_with_cache_enabled_return_consistent_status() {
         status1, status2,
         "cached and non-cached responses should have the same status"
     );
+}
+
+#[tokio::test]
+async fn cached_responses_are_annotated_when_flag_enabled() {
+    // Build state with caching enabled and annotation flag turned on.
+    let app = app_with_state(AppState::new_with_cached_flag(
+        Some(Arc::from("testkey")),
+        Duration::from_secs(60),
+    ));
+
+    let res1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/geo?ip=1.1.1.1")
+                .body(Body::empty())
+                .expect("failed to build request for cached flag test (first)"),
+        )
+        .await
+        .expect("app.oneshot failed for cached flag test (first)");
+    let status1 = res1.status();
+
+    let body1_bytes: axum::body::Bytes = body::to_bytes(res1.into_body(), usize::MAX)
+        .await
+        .expect("failed to read first response body");
+    let body1 =
+        String::from_utf8(body1_bytes.to_vec()).expect("first response body was not valid UTF-8");
+
+    let res2 = app
+        .oneshot(
+            Request::builder()
+                .uri("/geo?ip=1.1.1.1")
+                .body(Body::empty())
+                .expect("failed to build request for cached flag test (second)"),
+        )
+        .await
+        .expect("app.oneshot failed for cached flag test (second)");
+    let status2 = res2.status();
+
+    let body2_bytes: axum::body::Bytes = body::to_bytes(res2.into_body(), usize::MAX)
+        .await
+        .expect("failed to read second response body");
+    let body2 =
+        String::from_utf8(body2_bytes.to_vec()).expect("second response body was not valid UTF-8");
+
+    if status1.is_success() && status2.is_success() && status1 == status2 {
+        assert!(
+            !body1.contains("\"cached\":true"),
+            "first (uncached) response should not contain cached flag"
+        );
+        assert!(
+            body2.contains("\"cached\":true"),
+            "second (cached) response should contain cached flag"
+        );
+    }
 }
