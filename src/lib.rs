@@ -18,6 +18,7 @@ pub struct AppState {
     pub api_key: Option<String>,
     pub cache_ttl: Duration,
     cache: Option<IpCache>,
+    client: reqwest::Client,
 }
 
 impl AppState {
@@ -27,6 +28,7 @@ impl AppState {
             api_key,
             cache_ttl: Duration::from_secs(0),
             cache: None,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -42,6 +44,7 @@ impl AppState {
             api_key,
             cache_ttl: ttl,
             cache,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -56,6 +59,7 @@ impl AppState {
             api_key,
             cache_ttl,
             cache,
+            client: reqwest::Client::new(),
         }
     }
 }
@@ -123,7 +127,7 @@ async fn geo(
 
     let url = format!("https://api.ip2location.io/?key={api_key}&ip={ip}");
 
-    let resp = match reqwest::Client::new().get(url).send().await {
+    let resp = match state.client.get(url).send().await {
         Ok(r) => r,
         Err(_) => return (StatusCode::BAD_GATEWAY, "provider request failed").into_response(),
     };
