@@ -25,6 +25,46 @@ async fn returns_400_on_invalid_ip() {
 }
 
 #[tokio::test]
+async fn rejects_loopback_ip_with_400() {
+    let app = app_with_state(AppState::new(
+        Some(Arc::from("testkey")),
+        Duration::from_secs(0),
+    ));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/geo?ip=127.0.0.1")
+                .body(Body::empty())
+                .expect("failed to build request for loopback ip test"),
+        )
+        .await
+        .expect("app.oneshot failed for loopback ip test");
+
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn rejects_private_ip_with_400() {
+    let app = app_with_state(AppState::new(
+        Some(Arc::from("testkey")),
+        Duration::from_secs(0),
+    ));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/geo?ip=192.168.1.1")
+                .body(Body::empty())
+                .expect("failed to build request for private ip test"),
+        )
+        .await
+        .expect("app.oneshot failed for private ip test");
+
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn returns_500_when_api_key_missing() {
     let app = app_with_state(AppState::new(None, Duration::from_secs(0)));
 

@@ -112,6 +112,22 @@ async fn geo(
         None => return (StatusCode::BAD_REQUEST, "invalid ip").into_response(),
     };
 
+    let is_non_routable = match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+    };
+
+    if is_non_routable {
+        return (StatusCode::BAD_REQUEST, "non-routable ip not allowed").into_response();
+    }
+
     if let Some(cache) = &state.cache {
         let mut cache_guard = cache.lock().await;
         if let Some(entry) = cache_guard.get(&ip) {
