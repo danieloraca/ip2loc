@@ -2,11 +2,13 @@ use axum::{body::Body, http::Request, http::StatusCode};
 use tower::ServiceExt;
 
 use iploc::{AppConfig, app_with_config};
+use std::time::Duration;
 
 #[tokio::test]
 async fn returns_400_on_invalid_ip() {
     let app = app_with_config(AppConfig {
         api_key: Some("testkey".to_string()),
+        cache_ttl: Duration::from_secs(0),
     });
 
     let res = app
@@ -24,7 +26,10 @@ async fn returns_400_on_invalid_ip() {
 
 #[tokio::test]
 async fn returns_500_when_api_key_missing() {
-    let app = app_with_config(AppConfig { api_key: None });
+    let app = app_with_config(AppConfig {
+        api_key: None,
+        cache_ttl: Duration::from_secs(0),
+    });
 
     let res = app
         .oneshot(

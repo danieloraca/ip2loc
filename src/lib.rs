@@ -5,24 +5,61 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use std::{collections::HashMap, net::IpAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AppConfig {
     pub api_key: Option<String>,
+    pub cache_ttl: Duration,
 }
 
 impl AppConfig {
     pub fn from_env() -> Self {
         let api_key = std::env::var("IP2LOCATIONIO_KEY").ok();
-        AppConfig { api_key }
+        AppConfig {
+            api_key,
+            cache_ttl: Duration::from_secs(0),
+        }
+    }
+
+    pub fn from_env_with_cache(ttl: Duration) -> Self {
+        let api_key = std::env::var("IP2LOCATIONIO_KEY").ok();
+        AppConfig {
+            api_key,
+            cache_ttl: ttl,
+        }
     }
 }
 
+#[derive(Clone)]
+struct CacheEntry {
+    body: String,
+    expires_at: Instant,
+}
+
+type IpCache = Arc<Mutex<HashMap<IpAddr, CacheEntry>>>;
+
+fn build_cache() -> IpCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
+
 pub fn app_with_config(config: AppConfig) -> Router {
+    let cache = if config.cache_ttl > Duration::from_secs(0) {
+        Some(build_cache())
+    } else {
+        None
+    };
+
     Router::new()
         .route("/geo", get(geo))
         .layer(Extension(Arc::new(config)))
+        .layer(Extension(cache))
 }
 
 pub fn app() -> Router {
@@ -32,8 +69,8 @@ pub fn app() -> Router {
 async fn geo(
     Query(q): Query<HashMap<String, String>>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(cache): Extension<Option<IpCache>>,
 ) -> Response {
-    // Decide on API key from injected configuration
     let api_key = match &config.api_key {
         Some(k) => k.clone(),
         None => {
@@ -45,16 +82,31 @@ async fn geo(
         }
     };
 
-    // Parse the IP parameter
     let ip = match q.get("ip").and_then(|s| s.parse::<IpAddr>().ok()) {
         Some(ip) => ip,
         None => return (StatusCode::BAD_REQUEST, "invalid ip").into_response(),
     };
 
-    // Prepare URL for provider
+    if let Some(cache) = &cache {
+        let mut cache_guard = cache.lock().await;
+        if let Some(entry) = cache_guard.get(&ip) {
+            if entry.expires_at > Instant::now() {
+                // Return cached body
+                let mut res = (StatusCode::OK, entry.body.clone()).into_response();
+                res.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
+                return res;
+            } else {
+                cache_guard.remove(&ip);
+            }
+        }
+        drop(cache_guard);
+    }
+
     let url = format!("https://api.ip2location.io/?key={api_key}&ip={ip}");
 
-    // Perform request to provider
     let resp = match reqwest::Client::new().get(url).send().await {
         Ok(r) => r,
         Err(_) => return (StatusCode::BAD_GATEWAY, "provider request failed").into_response(),
@@ -69,6 +121,17 @@ async fn geo(
         Ok(b) => b,
         Err(_) => return (StatusCode::BAD_GATEWAY, "provider read failed").into_response(),
     };
+
+    if let Some(cache) = &cache {
+        let mut cache_guard = cache.lock().await;
+        cache_guard.insert(
+            ip,
+            CacheEntry {
+                body: body.clone(),
+                expires_at: Instant::now() + config.cache_ttl,
+            },
+        );
+    }
 
     let mut res = (StatusCode::OK, body).into_response();
     res.headers_mut().insert(
