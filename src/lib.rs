@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub api_key: Option<String>,
+    pub api_key: Option<Arc<str>>,
     pub cache_ttl: Duration,
     cache: Option<IpCache>,
     client: reqwest::Client,
@@ -23,7 +23,9 @@ pub struct AppState {
 
 impl AppState {
     pub fn from_env() -> Self {
-        let api_key = std::env::var("IP2LOCATIONIO_KEY").ok();
+        let api_key = std::env::var("IP2LOCATIONIO_KEY")
+            .ok()
+            .map(|s| Arc::from(s.as_str()));
         AppState {
             api_key,
             cache_ttl: Duration::from_secs(0),
@@ -33,7 +35,9 @@ impl AppState {
     }
 
     pub fn from_env_with_cache(ttl: Duration) -> Self {
-        let api_key = std::env::var("IP2LOCATIONIO_KEY").ok();
+        let api_key = std::env::var("IP2LOCATIONIO_KEY")
+            .ok()
+            .map(|s| Arc::from(s.as_str()));
         let cache = if ttl > Duration::from_secs(0) {
             Some(build_cache())
         } else {
@@ -48,7 +52,7 @@ impl AppState {
         }
     }
 
-    pub fn new(api_key: Option<String>, cache_ttl: Duration) -> Self {
+    pub fn new(api_key: Option<Arc<str>>, cache_ttl: Duration) -> Self {
         let cache = if cache_ttl > Duration::from_secs(0) {
             Some(build_cache())
         } else {
@@ -93,7 +97,7 @@ async fn geo(
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     let api_key = match &state.api_key {
-        Some(k) => k.clone(),
+        Some(k) => k,
         None => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,

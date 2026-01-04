@@ -2,12 +2,12 @@ use axum::{body::Body, http::Request, http::StatusCode};
 use tower::ServiceExt;
 
 use iploc::{AppState, app_with_state};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::test]
 async fn returns_400_on_invalid_ip() {
     let app = app_with_state(AppState::new(
-        Some("testkey".to_string()),
+        Some(Arc::from("testkey")),
         Duration::from_secs(0),
     ));
 
@@ -44,7 +44,7 @@ async fn returns_500_when_api_key_missing() {
 #[tokio::test]
 async fn returns_non_error_on_valid_ip_with_api_key() {
     let app = app_with_state(AppState::new(
-        Some("testkey".to_string()),
+        Some(Arc::from("testkey")),
         // Disable caching here so we exercise the full provider path.
         Duration::from_secs(0),
     ));
@@ -74,7 +74,7 @@ async fn returns_non_error_on_valid_ip_with_api_key() {
 #[tokio::test]
 async fn repeated_requests_with_cache_enabled_return_consistent_status() {
     let app = app_with_state(AppState::new(
-        Some("testkey".to_string()),
+        Some(Arc::from("testkey")),
         Duration::from_secs(60),
     ));
 
