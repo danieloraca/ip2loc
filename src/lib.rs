@@ -251,10 +251,15 @@ async fn geo(
         if state.cache_ttl > Duration::from_secs(0) {
             let cached_body =
                 if state.annotate_cached_responses && body.trim_start().starts_with('{') {
-                    format!(
-                        r#"{{"cached":true,{}}}"#,
-                        body.trim_start().trim_start_matches('{')
-                    )
+                    let trimmed = body.trim_start();
+                    // trimmed = "{...}"
+                    // inner = everything between the outer braces
+                    if let Some(pos) = trimmed.rfind('}') {
+                        let inner = &trimmed[1..pos]; // between { and }
+                        format!(r#"{{"cached":true,{inner}}}"#)
+                    } else {
+                        body.clone()
+                    }
                 } else {
                     body.clone()
                 };
